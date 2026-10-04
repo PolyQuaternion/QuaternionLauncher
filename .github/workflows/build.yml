@@ -1,0 +1,131 @@
+name: Build and Release Quaternion Launcher
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux (x86_64, glibc 2.35)
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            binary_name: quaternion-launcher
+            artifact_name: quaternion-launcher-linux
+            output_name: quaternion-launcher-linux
+
+          - name: Windows (x86_64)
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: quaternion-launcher.exe
+            artifact_name: quaternion-launcher-windows
+            output_name: quaternion-launcher.exe
+
+          - name: macOS (Universal x86_64 + Apple Silicon)
+            os: macos-latest
+            target: universal
+            binary_name: quaternion-launcher
+            artifact_name: quaternion-launcher-macos
+            output_name: quaternion-launcher-mac
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target != 'universal' && matrix.platform.target || 'x86_64-apple-darwin,aarch64-apple-darwin' }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Linux binary (glibc 2.35)
+        if: matrix.platform.os == 'ubuntu-22.04'
+        run: |
+          cargo build --release --target ${{ matrix.platform.target }}
+          mkdir -p artifacts
+          cp target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }} artifacts/${{ matrix.platform.output_name }}
+          chmod +x artifacts/${{ matrix.platform.output_name }}
+
+      - name: Build Windows binary
+        if: matrix.platform.os == 'windows-latest'
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.platform.target }}
+          mkdir -p artifacts
+          cp target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }} artifacts/${{ matrix.platform.output_name }}
+
+      - name: Build macOS Universal binary
+        if: matrix.platform.os == 'macos-latest'
+        run: |
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          mkdir -p artifacts
+          lipo -create -output artifacts/${{ matrix.platform.output_name }} \
+            target/x86_64-apple-darwin/release/quaternion-launcher \
+            target/aarch64-apple-darwin/release/quaternion-launcher
+          chmod +x artifacts/${{ matrix.platform.output_name }}
+
+      - name: Verify Binary
+        shell: bash
+        run: |
+          ls -la artifacts/
+          file artifacts/${{ matrix.platform.output_name }} || true
+
+      - name: Upload Platform Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: artifacts/${{ matrix.platform.output_name }}
+          if-no-files-found: error
+
+  bundle:
+    name: Bundle All Platform Binaries
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+
+      - name: Prepare Website Downloads Directory Structure
+        run: |
+          mkdir -p release-downloads
+          cp all-artifacts/quaternion-launcher-linux/quaternion-launcher-linux release-downloads/
+          cp all-artifacts/quaternion-launcher-windows/quaternion-launcher.exe release-downloads/
+          cp all-artifacts/quaternion-launcher-macos/quaternion-launcher-mac release-downloads/
+          chmod +x release-downloads/quaternion-launcher-linux release-downloads/quaternion-launcher-mac
+          ls -la release-downloads/
+
+      - name: Upload Combined Downloads Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quaternion-launcher-all
+          path: release-downloads/*
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-downloads/quaternion-launcher.exe
+            release-downloads/quaternion-launcher-linux
+            release-downloads/quaternion-launcher-mac
+          generate_release_notes: true
+          draft: false
+          prerelease: false
