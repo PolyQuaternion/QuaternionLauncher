@@ -1,18 +1,10 @@
-name: Build and Release Quaternion Launcher
+name: "Build"
 
 on:
   push:
-    tags: [ "v*" ]
+    branches:
+      - main
   workflow_dispatch:
-    inputs:
-      publish_release:
-        description: 'Publish GitHub Release'
-        required: false
-        type: boolean
-        default: false
-
-permissions:
-  contents: write
 
 jobs:
   build:
@@ -44,6 +36,11 @@ jobs:
             output_name: quaternion-launcher-mac
 
     steps:
+      - name: Disable Windows Defender (Windows)
+        if: runner.os == 'Windows'
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+        shell: powershell
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -95,40 +92,3 @@ jobs:
           path: artifacts/${{ matrix.platform.output_name }}
           if-no-files-found: error
 
-  bundle:
-    name: Bundle All Platform Binaries
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: all-artifacts
-
-      - name: Prepare Website Downloads Directory Structure
-        run: |
-          mkdir -p release-downloads
-          cp all-artifacts/quaternion-launcher-linux/quaternion-launcher-linux release-downloads/
-          cp all-artifacts/quaternion-launcher-windows/quaternion-launcher.exe release-downloads/
-          cp all-artifacts/quaternion-launcher-macos/quaternion-launcher-mac release-downloads/
-          chmod +x release-downloads/quaternion-launcher-linux release-downloads/quaternion-launcher-mac
-          ls -la release-downloads/
-
-      - name: Upload Combined Downloads Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: quaternion-launcher-all
-          path: release-downloads/*
-          if-no-files-found: error
-
-      - name: Create GitHub Release
-        if: github.event.inputs.publish_release == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            release-downloads/quaternion-launcher.exe
-            release-downloads/quaternion-launcher-linux
-            release-downloads/quaternion-launcher-mac
-          generate_release_notes: true
-          draft: false
-          prerelease: false
