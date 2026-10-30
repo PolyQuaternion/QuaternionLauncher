@@ -2,11 +2,14 @@ name: Build and Release Quaternion Launcher
 
 on:
   push:
-    branches: [ "main", "master" ]
     tags: [ "v*" ]
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish GitHub Release'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -19,7 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - name: Linux (x86_64, glibc 2.35)
+          - name: Linux (x86_64)
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             binary_name: quaternion-launcher
@@ -33,7 +36,7 @@ jobs:
             artifact_name: quaternion-launcher-windows
             output_name: quaternion-launcher.exe
 
-          - name: macOS (Universal x86_64 + Apple Silicon)
+          - name: macOS (universal)
             os: macos-latest
             target: universal
             binary_name: quaternion-launcher
@@ -52,7 +55,7 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build Linux binary (glibc 2.35)
+      - name: Build Linux binary
         if: matrix.platform.os == 'ubuntu-22.04'
         run: |
           cargo build --release --target ${{ matrix.platform.target }}
@@ -68,7 +71,7 @@ jobs:
           mkdir -p artifacts
           cp target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }} artifacts/${{ matrix.platform.output_name }}
 
-      - name: Build macOS Universal binary
+      - name: Build macOS binary
         if: matrix.platform.os == 'macos-latest'
         run: |
           cargo build --release --target x86_64-apple-darwin
@@ -119,7 +122,7 @@ jobs:
           if-no-files-found: error
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event.inputs.publish_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |

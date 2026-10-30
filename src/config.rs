@@ -50,10 +50,10 @@ impl PathManager {
     /// Get default client data directory (portable if `./client` exists, else user data dir)
     pub fn get_client_dir() -> Result<PathBuf> {
         let launcher_dir = Self::get_launcher_dir()?;
-        let portable_client = launcher_dir.join("client");
+        let client_dir = launcher_dir.join("client");
 
-        if portable_client.exists() {
-            return Ok(portable_client);
+        if client_dir.exists() {
+            return Ok(client_dir);
         }
 
         // Check if executable exists directly in the launcher directory
@@ -66,12 +66,45 @@ impl PathManager {
             return Ok(launcher_dir);
         }
 
+        // If launcher is running from its install directory, create and use the local client subfolder
+        #[cfg(target_os = "macos")]
+        if let Ok(home) = std::env::var("HOME") {
+            if launcher_dir == PathBuf::from(&home).join("Applications/Quaternion") {
+                let _ = fs::create_dir_all(&client_dir);
+                return Ok(client_dir);
+            }
+        }
+
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        {
+            let install_dir = if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
+                PathBuf::from(xdg_data).join("quaternion")
+            } else if let Ok(home) = std::env::var("HOME") {
+                PathBuf::from(home).join(".local/share/quaternion")
+            } else {
+                PathBuf::new()
+            };
+            if !install_dir.as_os_str().is_empty() && launcher_dir == install_dir {
+                let _ = fs::create_dir_all(&client_dir);
+                return Ok(client_dir);
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            if launcher_dir == PathBuf::from(&local_app_data).join("Quaternion") {
+                let _ = fs::create_dir_all(&client_dir);
+                return Ok(client_dir);
+            }
+        }
+
         if let Some(proj_dirs) = ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION) {
             let data_dir = proj_dirs.data_local_dir().join("client");
             fs::create_dir_all(&data_dir).context("Failed to create client directory")?;
             Ok(data_dir)
         } else {
-            Ok(portable_client)
+            let _ = fs::create_dir_all(&client_dir);
+            Ok(client_dir)
         }
     }
 
@@ -82,6 +115,39 @@ impl PathManager {
 
         if portable_config.exists() {
             return Ok(portable_config);
+        }
+
+        let install_config = launcher_dir.join("config.json");
+        if install_config.exists() {
+            return Ok(install_config);
+        }
+
+        #[cfg(target_os = "macos")]
+        if let Ok(home) = std::env::var("HOME") {
+            if launcher_dir == PathBuf::from(&home).join("Applications/Quaternion") {
+                return Ok(install_config);
+            }
+        }
+
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        {
+            let install_dir = if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
+                PathBuf::from(xdg_data).join("quaternion")
+            } else if let Ok(home) = std::env::var("HOME") {
+                PathBuf::from(home).join(".local/share/quaternion")
+            } else {
+                PathBuf::new()
+            };
+            if !install_dir.as_os_str().is_empty() && launcher_dir == install_dir {
+                return Ok(install_config);
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            if launcher_dir == PathBuf::from(&local_app_data).join("Quaternion") {
+                return Ok(install_config);
+            }
         }
 
         if let Some(proj_dirs) = ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION) {

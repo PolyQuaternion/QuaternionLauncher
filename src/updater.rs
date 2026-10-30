@@ -14,6 +14,9 @@ pub struct UpdateManifest {
     pub version: String,
     pub download_url: String,
     pub sha256: Option<String>,
+    pub launcher_version: Option<String>,
+    pub launcher_url: Option<String>,
+    pub launcher_sha256: Option<String>,
     pub changelog: Option<String>,
 }
 
@@ -85,6 +88,88 @@ impl Updater {
         Ok(manifest)
     }
 
+    pub async fn update_launcher_self(&self, manifest: &UpdateManifest) -> Result<bool> {
+        let launcher_url = match &manifest.launcher_url {
+            Some(u) if !u.is_empty() => u,
+            _ => return Ok(false),
+        };
+
+        let current_version = env!("CARGO_PKG_VERSION");
+        let remote_version = manifest.launcher_version.as_deref().unwrap_or("");
+
+        if !remote_version.is_empty() && remote_version == current_version {
+            return Ok(false);
+        }
+
+        let current_exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(_) => return Ok(false),
+        };
+
+        let old_exe = current_exe.with_extension("old");
+        if old_exe.exists() {
+            let _ = fs::remove_file(&old_exe);
+        }
+
+        if let Some(expected_sha) = manifest.launcher_sha256.as_deref() {
+            if let Ok(current_bytes) = fs::read(&current_exe) {
+                let current_hash = hex::encode(Sha256::digest(&current_bytes));
+                if current_hash.eq_ignore_ascii_case(expected_sha) {
+                    return Ok(false);
+                }
+            }
+        }
+
+        println!(
+            "{} New launcher version found: {} -> {}",
+            "[+]".green().bold(),
+            current_version,
+            if remote_version.is_empty() { "latest" } else { remote_version }.bold()
+        );
+
+        let temp_dir = tempfile::tempdir()?;
+        let temp_launcher_path = temp_dir.path().join("quaternion_launcher_update");
+
+        self.download_file(launcher_url, &temp_launcher_path, manifest.launcher_sha256.as_deref())
+            .await?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&temp_launcher_path, fs::Permissions::from_mode(0o755));
+        }
+
+        println!("{} Updating launcher executable...", "[*]".cyan());
+
+        if let Err(e) = fs::rename(&current_exe, &old_exe) {
+            println!(
+                "{} Warning: Could not rename current launcher binary ({}). Skipping launcher update.",
+                "[!]".yellow(),
+                e
+            );
+            return Ok(false);
+        }
+
+        if let Err(e) = fs::copy(&temp_launcher_path, &current_exe) {
+            let _ = fs::rename(&old_exe, &current_exe);
+            return Err(anyhow!("Failed to install new launcher executable: {}", e));
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&current_exe, fs::Permissions::from_mode(0o755));
+            let _ = fs::remove_file(&old_exe);
+        }
+
+        println!(
+            "{} Successfully updated Quaternion Launcher!\n",
+            "[✓]".green().bold()
+        );
+
+        Ok(true)
+    }
+
     pub async fn check_and_update(&self, endpoint: &str, channel: &str) -> Result<bool> {
         fs::create_dir_all(&self.client_dir)?;
 
@@ -99,6 +184,17 @@ impl Updater {
                 return Ok(false);
             }
         };
+
+        // 1. Check and self-update the launcher binary
+        if let Err(e) = self.update_launcher_self(&manifest).await {
+            println!(
+                "{} Warning: Launcher self-update check failed: {}",
+                "[!]".yellow(),
+                e
+            );
+        }
+
+        // 2. Check and update the client files
 
         let local_info = self.get_local_version();
         let needs_update = match &local_info {

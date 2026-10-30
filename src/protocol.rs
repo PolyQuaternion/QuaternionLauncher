@@ -11,53 +11,61 @@ pub struct LaunchTarget {
 pub struct ProtocolParser;
 
 impl ProtocolParser {
-    /// Parse a URI string like `polytoria://launch/<token>` or `polytoria://<token>`
+    /// Parse a URI string like `polytoria://clientbeta/<token>`, `polytoria://launch/<token>`, `polytoria://creator/<token>`, etc.
     pub fn parse_uri(raw_uri: &str) -> Result<LaunchTarget> {
-        let uri = Url::parse(raw_uri).map_err(|e| anyhow!("Invalid URL format '{}': {}", raw_uri, e))?;
-
-        let scheme = uri.scheme();
-        if scheme != "polytoria" {
-            return Err(anyhow!("Unsupported URL scheme '{}' (expected 'polytoria')", scheme));
+        let trimmed = raw_uri.trim();
+        if !trimmed.starts_with("polytoria://") && !trimmed.starts_with("polytoria:") {
+            return Err(anyhow!("Unsupported URL scheme (expected 'polytoria://')"));
         }
 
         let mut is_creator = false;
         let mut token: Option<String> = None;
         let mut extra_godot_args: Vec<String> = Vec::new();
 
-        // 1. Check query parameters first (e.g. ?token=XYZ)
-        for (key, value) in uri.query_pairs() {
-            if key == "token" {
-                token = Some(value.to_string());
-            } else if key == "creator" && (value == "1" || value == "true") {
-                is_creator = true;
-            } else {
-                extra_godot_args.push(format!("--{}", key));
-                if !value.is_empty() {
-                    extra_godot_args.push(value.to_string());
+        // 1. Try standard URL parse first to extract query params
+        if let Ok(uri) = Url::parse(trimmed) {
+            for (key, value) in uri.query_pairs() {
+                if key == "token" {
+                    token = Some(value.to_string());
+                } else if key == "creator" && (value == "1" || value == "true") {
+                    is_creator = true;
+                } else {
+                    extra_godot_args.push(format!("--{}", key));
+                    if !value.is_empty() {
+                        extra_godot_args.push(value.to_string());
+                    }
                 }
             }
         }
 
-        // 2. If token not in query, check path/host segments
-        // Examples:
-        // - polytoria://launch/<token> -> host = "launch", path = "/<token>"
-        // - polytoria://<token> -> host = "<token>"
+        // 2. If token not found in query params, parse path/host components
         if token.is_none() {
-            let host = uri.host_str().unwrap_or("");
-            let path_segments: Vec<&str> = uri
-                .path_segments()
-                .map(|c| c.filter(|s| !s.is_empty()).collect())
-                .unwrap_or_default();
+            let without_scheme = if let Some(stripped) = trimmed.strip_prefix("polytoria://") {
+                stripped
+            } else if let Some(stripped) = trimmed.strip_prefix("polytoria:") {
+                stripped
+            } else {
+                trimmed
+            };
 
-            if host == "launch" || host == "join" {
-                if let Some(t) = path_segments.first() {
-                    token = Some(t.to_string());
+            let path_part = without_scheme.split('?').next().unwrap_or("").trim_matches('/');
+            let segments: Vec<&str> = path_part.split('/').filter(|s| !s.is_empty()).collect();
+
+            if segments.len() >= 2 {
+                let mode = segments[0].to_lowercase();
+                if mode.contains("creator") {
+                    is_creator = true;
                 }
-            } else if !host.is_empty() && host != "play" {
-                // polytoria://<token>
-                token = Some(host.to_string());
-            } else if let Some(t) = path_segments.first() {
-                token = Some(t.to_string());
+                token = Some(segments[1].to_string());
+            } else if segments.len() == 1 {
+                let seg = segments[0];
+                let mode = seg.to_lowercase();
+                if mode.contains("creator") {
+                    is_creator = true;
+                } else if !["launch", "client", "play", "join", "test"].iter().any(|&m| mode.starts_with(m)) {
+                    // Direct token: polytoria://<token>
+                    token = Some(seg.to_string());
+                }
             }
         }
 
@@ -72,6 +80,27 @@ impl ProtocolParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_clientbeta_url() {
+        let target = ProtocolParser::parse_uri("polytoria://clientbeta/10a9117651a148c414fb96fa52aa7a48").unwrap();
+        assert_eq!(target.token, Some("10a9117651a148c414fb96fa52aa7a48".to_string()));
+        assert!(!target.is_creator);
+    }
+
+    #[test]
+    fn test_parse_client_beta_dash_url() {
+        let target = ProtocolParser::parse_uri("polytoria://client-beta/10a9117651a148c414fb96fa52aa7a48").unwrap();
+        assert_eq!(target.token, Some("10a9117651a148c414fb96fa52aa7a48".to_string()));
+        assert!(!target.is_creator);
+    }
+
+    #[test]
+    fn test_parse_creatorbeta_url() {
+        let target = ProtocolParser::parse_uri("polytoria://creatorbeta/10a9117651a148c414fb96fa52aa7a48").unwrap();
+        assert_eq!(target.token, Some("10a9117651a148c414fb96fa52aa7a48".to_string()));
+        assert!(target.is_creator);
+    }
 
     #[test]
     fn test_parse_standard_launch_url() {
