@@ -1,13 +1,17 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod config;
 mod installer;
 mod launcher;
 mod protocol;
+mod ui;
 mod updater;
 
 use anyhow::Result;
 use clap::Parser;
 use colored::*;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use config::{LauncherConfig, PathManager};
 use installer::ProtocolInstaller;
@@ -19,7 +23,7 @@ use updater::Updater;
 #[command(
     name = "quaternion-launcher",
     author = "Quaternion Developers",
-    version = "0.1.0",
+    version,
     about = "Lightweight bootstrapper, updater, and protocol launcher for Quaternion & Polytoria"
 )]
 struct Cli {
@@ -42,6 +46,10 @@ struct Cli {
     /// Force check and download latest update
     #[arg(long)]
     update: bool,
+
+    /// Do not display graphical update progress window
+    #[arg(long)]
+    no_gui: bool,
 
     /// Register this launcher as the default OS protocol handler for polytoria://
     #[arg(long)]
@@ -74,6 +82,9 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    init_windows_console();
+
     let cli = Cli::parse();
 
     // 1. Handle Protocol Registration / Unregistration commands
@@ -153,12 +164,47 @@ async fn main() -> Result<()> {
 
     // 5. Updater Step (Pre-launch)
     let should_update = (config.auto_update && !cli.no_update) || cli.update;
-    let updater = Updater::new(client_dir.clone());
+    let updater = Arc::new(Updater::new(client_dir.clone()));
 
     if should_update {
-        let _ = updater
-            .check_and_update(&config.update_url, &config.channel)
-            .await;
+        match updater.check_for_updates(&config.update_url, &config.channel).await {
+            Ok(Some(pending)) => {
+                let has_display = std::env::var("DISPLAY").is_ok()
+                    || std::env::var("WAYLAND_DISPLAY").is_ok()
+                    || cfg!(target_os = "windows")
+                    || cfg!(target_os = "macos");
+
+                let use_gui = !cli.no_gui && has_display;
+                let mut update_done = false;
+
+                if use_gui {
+                    match ui::run_update_dialog(updater.clone(), pending.clone(), config.channel.clone()) {
+                        Ok(()) => update_done = true,
+                        Err(e) => {
+                            println!(
+                                "{} Warning: GUI updater failed ({}), falling back to CLI.",
+                                "[!]".yellow(),
+                                e
+                            );
+                        }
+                    }
+                }
+
+                if !update_done {
+                    let _ = updater.apply_update(&pending, &config.channel, None).await;
+                }
+            }
+            Ok(None) => {
+                // Client is up to date already
+            }
+            Err(e) => {
+                println!(
+                    "{} Warning: Could not complete update check ({})",
+                    "[!]".yellow(),
+                    e
+                );
+            }
+        }
     }
 
     // If --update only was requested with no token/launch intent, we can exit cleanly
@@ -169,7 +215,7 @@ async fn main() -> Result<()> {
 
     // 6. Locate Executable & Launch
     let executable = GameLauncher::find_executable(&client_dir, config.custom_client_path.as_ref())?;
-    
+
     GameLauncher::launch(
         &client_dir,
         &executable,
@@ -179,4 +225,15 @@ async fn main() -> Result<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn init_windows_console() {
+    unsafe {
+        extern "system" {
+            fn AttachConsole(dw_process_id: u32) -> i32;
+        }
+        const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
 }

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag / Release version (e.g. v1.0.0)'
+        description: 'Release version (e.g. v1.0.0)'
         required: true
         type: string
       changelog:
@@ -63,8 +63,6 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -112,6 +110,7 @@ jobs:
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: artifacts/${{ matrix.platform.output_name }}
+          retention-days: 1
           if-no-files-found: error
 
   publish:

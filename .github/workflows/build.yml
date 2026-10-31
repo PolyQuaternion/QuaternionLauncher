@@ -90,5 +90,6 @@ jobs:
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: artifacts/${{ matrix.platform.output_name }}
+          retention-days: 30
           if-no-files-found: error
 
